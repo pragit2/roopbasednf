@@ -62,8 +62,6 @@ def parse_args() -> None:
     roop.globals.output_video_encoder = args.output_video_encoder
     roop.globals.output_video_quality = args.output_video_quality
     roop.globals.max_memory = args.max_memory
-    roop.globals.execution_providers = decode_execution_providers(args.execution_provider)
-    roop.globals.execution_threads = args.execution_threads
 
 
 def encode_execution_providers(execution_providers: List[str]) -> List[str]:
@@ -71,28 +69,28 @@ def encode_execution_providers(execution_providers: List[str]) -> List[str]:
 
 
 def decode_execution_providers(execution_providers: List[str]) -> List[str]:
-    return [provider for provider, encoded_execution_provider in zip(onnxruntime.get_available_providers(), encode_execution_providers(onnxruntime.get_available_providers()))
+    return [provider for provider, encoded_execution_provider in zip(tensorflow.config.experimental.get_available_providers(), encode_execution_providers(tensorflow.config.experimental.get_available_providers()))
             if any(execution_provider in encoded_execution_provider for execution_provider in execution_providers)]
 
 
 def suggest_execution_providers() -> List[str]:
-    return encode_execution_providers(onnxruntime.get_available_providers())
+    return encode_execution_providers(tensorflow.config.experimental.get_available_providers())
 
 
 def suggest_execution_threads() -> int:
-    if 'CUDAExecutionProvider' in onnxruntime.get_available_providers():
+    if 'CUDAExecutionProvider' in tensorflow.config.experimental.get_available_providers():
         return 8
     return 1
 
 
 def limit_resources() -> None:
-    # Evitar vazamento de memória do TensorFlow
+    # prevent tensorflow memory leak
     gpus = tensorflow.config.experimental.list_physical_devices('GPU')
     for gpu in gpus:
         tensorflow.config.experimental.set_virtual_device_configuration(gpu, [
             tensorflow.config.experimental.VirtualDeviceConfiguration(memory_limit=1024)
         ])
-    # Limitar o uso de memória
+    # limit memory usage
     if roop.globals.max_memory:
         memory = roop.globals.max_memory * 1024 ** 3
         if platform.system().lower() == 'darwin':
@@ -108,4 +106,107 @@ def limit_resources() -> None:
 
 def pre_check() -> bool:
     if sys.version_info < (3, 9):
-        update_status('A versão do Python')
+        update_status('Python version is not supported - please upgrade to 3.9 or higher.')
+        return False
+    if not shutil.which('ffmpeg'):
+        update_status('ffmpeg is not installed.')
+        return False
+    return True
+
+
+def update_status(message: str, scope: str = 'ROOP.CORE') -> None:
+    print(f'[{scope}] {message}')
+    if not roop.globals.headless:
+        ui.update_status(message)
+
+
+def start() -> None:
+    for frame_processor in get_frame_processors_modules(roop.globals.frame_processors):
+        if not frame_processor.pre_start():
+            return
+    # process image to image
+    if has_image_extension(roop.globals.target_path):
+        if predict_image(roop.globals.target_path):
+            destroy()
+        shutil.copy2(roop.globals.target_path, roop.globals.output_path)
+        # process frame
+        for frame_processor in get_frame_processors_modules(roop.globals.frame_processors):
+            update_status('Progressing...', frame_processor.NAME)
+            frame_processor.process_image(roop.globals.source_path, roop.globals.output_path, roop.globals.output_path)
+            frame_processor.post_process()
+        # validate image
+        if is_image(roop.globals.target_path):
+            update_status('Processing to image succeed!')
+        else:
+            update_status('Processing to image failed!')
+        return
+    # process image to videos
+    if predict_video(roop.globals.target_path):
+        destroy()
+    update_status('Creating temporary resources...')
+    create_temp(roop.globals.target_path)
+    # extract frames
+    if roop.globals.keep_fps:
+        fps = detect_fps(roop.globals.target_path)
+        update_status(f'Extracting frames with {fps} FPS...')
+        extract_frames(roop.globals.target_path, fps)
+    else:
+        update_status('Extracting frames with 30 FPS...')
+        extract_frames(roop.globals.target_path)
+    # process frame
+    temp_frame_paths = get_temp_frame_paths(roop.globals.target_path)
+    if temp_frame_paths:
+        for frame_processor in get_frame_processors_modules(roop.globals.frame_processors):
+            update_status('Progressing...', frame_processor.NAME)
+            frame_processor.process_video(roop.globals.source_path, temp_frame_paths)
+            frame_processor.post_process()
+    else:
+        update_status('Frames not found...')
+        return
+    # create video
+    if roop.globals.keep_fps:
+        fps = detect_fps(roop.globals.target_path)
+        update_status(f'Creating video with {fps} FPS...')
+        create_video(roop.globals.target_path, fps)
+    else:
+        update_status('Creating video with 30 FPS...')
+        create_video(roop.globals.target_path)
+    # handle audio
+    if roop.globals.skip_audio:
+        move_temp(roop.globals.target_path, roop.globals.output_path)
+        update_status('Skipping audio...')
+    else:
+        if roop.globals.keep_fps:
+            update_status('Restoring audio...')
+        else:
+            update_status('Restoring audio might cause issues as fps are not kept...')
+        restore_audio(roop.globals.target_path, roop.globals.output_path)
+    # clean temp
+    update_status('Cleaning temporary resources...')
+    clean_temp(roop.globals.target_path)
+    # validate video
+    if is_video(roop.globals.target_path):
+        update_status('Processing to video succeed!')
+    else:
+        update_status('Processing to video failed!')
+
+
+def destroy() -> None:
+    if roop.globals.target_path:
+        clean_temp(roop.globals.target_path)
+    sys.exit()
+
+
+if __name__ == "__main__":
+    parse_args()
+    if not pre_check():
+        sys.exit()
+    for frame_processor in get_frame_processors_modules(roop.globals.frame_processors):
+        if not frame_processor.pre_check():
+            sys.exit()
+    limit_resources()
+    if roop.globals.headless:
+        start()
+    else:
+        window = ui.init(start, destroy)
+        window.mainloop()
