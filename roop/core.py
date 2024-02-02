@@ -108,4 +108,4 @@ def limit_resources() -> None:
 
 def pre_check() -> bool:
     if sys.version_info < (3, 9):
-        update_status('A versão do Python
+        update_status('A versão do Python')
