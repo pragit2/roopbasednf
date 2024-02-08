@@ -1,3 +1,32 @@
+# Adicione essas linhas no início do seu script antes de importar outras bibliotecas
+import mxnet as mx
+
+# Configuração do MXNet para usar a GPU
+mx_ctx = mx.gpu() if mx.context.num_gpus() > 0 else mx.cpu()
+mx.npx.set_np()
+
+# Restante do seu código
+import threading
+from typing import Any, Optional, List
+import insightface
+import numpy
+
+import roop.globals
+from roop.typing import Frame, Face
+
+FACE_ANALYSER = None
+THREAD_LOCK = threading.Lock()
+
+def get_face_analyser() -> Any:
+    global FACE_ANALYSER
+
+    with THREAD_LOCK:
+        if FACE_ANALYSER is None:
+            FACE_ANALYSER = insightface.app.FaceAnalysis(name='buffalo_l', ctx_id=mx_ctx, providers=roop.globals.execution_providers)
+            FACE_ANALYSER.prepare(ctx_id=0)
+    return FACE_ANALYSER
+##############################################################minha ediçao acima #######################
+
 import threading
 from typing import Any, Optional, List
 import insightface
